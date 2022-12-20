@@ -1,0 +1,138 @@
+Загружаем библиотеки, устанавливаем рабочую директорию
+
+```{r}
+library(readr)
+library(stringr)
+library(dplyr)
+library(tidytext)
+library(stopwords)
+library(quanteda)
+library(mallet)
+library(LDAvis)
+library(servr)
+library(textstem)
+
+setwd('C:/Users/79175/Documents/pywd/YT/men_en')
+```
+
+
+
+```{r}
+
+# читаем файлы
+
+men_en <- lapply(Sys.glob("programming/*.csv"), read_csv)
+men_en_df <- bind_rows(men_en, .id = 'video_id')
+
+men_en_df <- men_en_df %>% 
+  select(video_id, comment_id = id, textOriginal)
+
+
+# чистим текст
+
+men_en_df$clean <- gsub("[[:punct:]]", " ", men_en_df$textOriginal)
+men_en_df$clean <- str_replace_all(men_en_df$clean, "[0-9]+", " ")
+men_en_df$clean <- str_replace_all(men_en_df$clean, "[\t\\n\r]+", " ")
+men_en_df$clean <- str_squish(men_en_df$clean)
+
+men_en_df$clean[nchar(men_en_df$clean)<=2]
+
+men_en_df <- men_en_df %>% 
+  filter(nchar(clean) > 2)
+```
+
+
+```{r}
+
+# токинезация
+
+men_en_lem <- men_en_df %>% 
+  group_by(video_id) %>% 
+  unnest_tokens(word, clean)
+
+# лемматизация
+
+men_en_lem$lemma <- lemmatize_words(men_en_lem$word) 
+
+head(men_en_lem)
+```
+
+
+Cмотрим частотность
+
+```{r}
+freq_word <- men_en_lem %>% 
+  ungroup() %>% 
+  count(lemma, sort=T)  # частотность слов
+head(freq_word, 20)
+```
+
+
+
+### Тематическое моделирование
+
+
+```{r}
+
+# загружаем стопслова
+
+write_lines(stopwords("en"), "stopwords_en.txt")
+
+mallet_instances_we <- mallet.import(id.array=men_en_df$comment_id,
+                                     text.array=men_en_df$clean,
+                                     stoplist="stopwords_en.txt")
+
+topic_model_we <- MalletLDA(num.topics=20) # 20 тем
+topic_model_we$loadDocuments(mallet_instances_we) 
+topic_model_we$setAlphaOptimization(20, 50) 
+
+vocabulary_we <- topic_model_we$getVocabulary() # словарь корпуса
+word_freqs_we <- mallet.word.freqs(topic_model_we) # частотности
+
+word_freqs_we %>% arrange(desc(doc.freq)) %>% head(10)
+```
+
+
+```{r}
+# тренируем модель 
+
+topic_model_we$train(500)
+topic_model_we$maximize(10)
+doc_topics_we <- mallet.doc.topics(topic_model_we, smoothed=TRUE, normalized=TRUE)
+topic_words_we <- mallet.topic.words(topic_model_we, smoothed=TRUE, normalized=TRUE)
+topic_labels_we <- mallet.topic.labels(topic_model_we, topic_words_we, 5)
+
+for (k in 1:nrow(topic_words_we)) {
+  top <- paste(mallet.top.words(topic_model_we, topic_words_we[k,], 30)$words,collapse=" ")
+  cat(paste(k, top, "\n"))
+}
+
+top_docs_we <- function(doc_topics_we, topic, docs, top.n=20) {
+  head(docs[order(-doc_topics_we[,topic])], top.n)
+}
+
+top_docs_we(doc_topics_we, 2, men_en_df$clean)
+plot(mallet.topic.hclust(doc_topics_we, topic_words_we, 0), labels=topic_labels_we)
+```
+
+
+
+```{r}
+# создаем json
+doc_length_we <- str_count(men_en_df$clean, boundary("word"))
+doc_length_we[doc_length_we==0] <- 0.000001
+
+
+json <- createJSON(phi=topic_words_we, 
+                   theta=doc_topics_we, 
+                   doc.length=doc_length_we, 
+                   vocab=vocabulary_we, 
+                   term.frequency=word_freqs_we$word.freq)
+
+#serVis(json, out.dir="women_en_20topics", open.browser=TRUE)
+serVis(json, open.browser=TRUE)
+
+topic_labels_we[1]
+top_docs_we(doc_topics_we, 2, men_en_df$clean)
+
+```
