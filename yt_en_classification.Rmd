@@ -3,10 +3,8 @@
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 knitr::opts_knit$set(root.dir = "C:/Users/79175/Documents/pywd/YT")
-
 getwd()
 ```
-
 
 ```{r}
 library(readr)
@@ -50,7 +48,6 @@ men_en_df$clean <- str_squish(men_en_df$clean)
 
 men_en_df$clean[nchar(men_en_df$clean)<=2]
 ```
-
 
 ```{r}
 # оставляем комментарии длиннее 2 символов
@@ -98,6 +95,7 @@ women_en_df$clean <- gsub("[[:punct:]]", " ", women_en_df$textOriginal)
 women_en_df$clean <- str_replace_all(women_en_df$clean, "[0-9]+", " ")
 women_en_df$clean <- str_replace_all(women_en_df$clean, "[\t\\n\r]+", " ")
 women_en_df$clean <- str_squish(women_en_df$clean)
+# нужно будет удалить имена
 
 women_en_df$clean[nchar(women_en_df$clean)<=2]
 
@@ -146,7 +144,7 @@ freqs <- m_freq_word %>%
   full_join(w_freq_word, by = "id", suffix = c("_men", "_women")) %>%
   select(id, lemma_men, ipm_men, lemma_women, ipm_women)
 
-freqs
+head(freqs, 30)
 ```
 
 Хотя мужской корпус почти в два раза больше, ipm первых слов оказались очень похожи.
@@ -194,6 +192,13 @@ freqs30
 
 ```
 
+Леммы, которые встретились в топе слов в одном корпусе и не встретились в другом:
+
+```{r}
+freqs30$lemma_women[!freqs30$lemma_women %in% freqs30$lemma_men]
+freqs30$lemma_men[!freqs30$lemma_men %in% freqs30$lemma_women]
+```
+
 Построим график
 
 ```{r}
@@ -209,15 +214,10 @@ ggplot(freqs30) +
 Сделаем модель, которая будет определять, мужское или женское видео, по комментариям.
 
 ```{r}
-# Добавляю пометки м/ж
+# Добавляю метки м/ж
 
 men_en_lem <- men_en_lem %>%
   mutate(sex = "men")
-
-# Я уменьшала размер мужского корпуса, чтобы он был примерно равен женскому
-
-#men_en_lem1 <- men_en_lem %>%
-#  filter(video_id < 25)
 
 women_en_lem <- women_en_lem %>%
   mutate(sex = "women")
@@ -228,7 +228,7 @@ en_df <- bind_rows(men_en_lem, women_en_lem) %>%
   mutate(sent_id = paste(sex, video_id, sep="_")) %>%   # добавляю уникальные id
   ungroup() %>%
   select(-word, -video_id) %>%
-  filter(!str_detect(lemma, "[А-Яа-я]"))   # надо было раньше убрать русские слова
+  filter(!str_detect(lemma, "[А-Яа-я]"))   # уберем русские слова
 
 # Размеры корпусов:
 
@@ -249,27 +249,42 @@ rm(w_freq30)
 rm(m_freq30)
 ```
 
-Создаем терм-документную матрицу для обучения классификатора с помощью меры TF-IDF
+Создаем матрицу теромв-документов для обучения классификатора с помощью меры TF-IDF
 
 ```{r}
-en.longmeta <- en_df %>% 
+# мета-данные с колонкой пола и id:
+en.longmeta <- en_df %>%
   distinct(sex, sent_id)
 
+# данные с текстами комментариев в виде списков:
 en.nested <- en_df %>%
   tidyr::nest(lemma) %>%
   mutate(text = map(data, unlist), 
          text = map_chr(text, paste, collapse = " ")) 
 
+# считаем TF-IDF:
 en.dtm <- en_df %>%
+    # считаем слова по каждому видео
     count(sent_id, lemma) %>%
-    bind_tf_idf(lemma, sent_id, n) %>% 
-    cast_dfm(sent_id, lemma, tf_idf)
+    # объединяем частотности слова во всем датасете и отдельно в каждом документе
+    bind_tf_idf(lemma, sent_id, n)
 
-# Матрицы терм-документов:
+head(en.dtm)
+```
+
+```{r}
+# создаем матрицу термов-документов:
+en.dtm <- en.dtm %>%
+  cast_dfm(sent_id, lemma, tf_idf)
+
 en.dtm
+```
+
+```{r}
+# оставим только английский язык
 en.clean <- en.dtm %>%
     dfm_wordstem(language = "en") 
-    dfm_trim(min_docfreq=0.1) 
+#    dfm_trim(min_termfreq = 0.01, min_docfreq = 0.01) 
 en.clean
 
 ```
@@ -291,18 +306,66 @@ trainY <- response[split]
 testY <- response[-split]
 ```
 
-Обучаем модель
+Обучаем модели
 
 ```{r}
 cv.elasticnet <- cv.glmnet(x = train.data, y = trainY, family = "binomial", type.measure="auc", nfolds = 5, standardize=FALSE)
+
+cv.ridge <- cv.glmnet(x=train.data, y=trainY, alpha=0, family="binomial", type.measure="auc", nfolds = 5, standardize=FALSE)
+
+cv.lasso <- cv.glmnet(x=train.data, y=trainY, alpha=1, family="binomial", type.measure="auc", nfolds = 5, standardize=FALSE)
+
+cv.elasticnet
+cv.ridge
+cv.lasso
 ```
 
 Предсказываем, чье видео, по комментариям
 
 ```{r}
 predicted.elasticnet <- as.factor(predict(cv.elasticnet, test.data, type="class"))
-cm.elasticnet <- confusionMatrix(data = predicted.elasticnet, reference = testY, positive="men")
+predicted.lasso <- as.factor(predict(cv.lasso, test.data, type="class"))
+predicted.ridge <- as.factor(predict(cv.ridge, test.data, type="class"))
+```
+
+Смотрим результаты
+
+```{r}
+# elasticnet
+cm.elasticnet <- confusionMatrix(data = predicted.elasticnet, reference = testY, positive="men", mode = "prec_recall")
+
 cm.elasticnet
 ```
 
-Можно теперь покрутить параметры и посмотреть, в чем были ошибки. И попробовать на корпусе побольше.
+```{r}
+# lassp
+cm.lasso <- confusionMatrix(data = predicted.lasso, reference = testY, positive="men", mode = "prec_recall")
+
+cm.lasso
+```
+
+```{r}
+# ridge
+cm.ridge <- confusionMatrix(data = predicted.ridge, reference = testY, positive="men", mode = "prec_recall")
+
+cm.ridge
+```
+
+
+
+```{r}
+coef(cv.ridge, cv.ridge$lambda.min) %>%
+    as.matrix %>% as.data.frame %>%
+    tibble::rownames_to_column() %>%
+    arrange(-abs(`s1`)) %>% head(20)
+
+```
+
+```{r}
+coef(cv.elasticnet, cv.elasticnet$lambda.min) %>%
+    as.matrix %>% as.data.frame %>%
+    tibble::rownames_to_column() %>%
+    arrange(-abs(`s1`)) %>% head(20)
+
+```
+
