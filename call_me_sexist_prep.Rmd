@@ -1,0 +1,182 @@
+---
+title: "call_me_sexist_prep"
+author: "Evgenia Khavronina"
+date: "2023-01-15"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = "C:/Users/79175/Documents/pywd/YT")
+
+setwd("C:/Users/79175/Documents/pywd/YT")
+getwd()
+```
+
+Библиотеки
+
+
+```{r}
+library(readr)    # для чтения csv
+library(stringr)  # для работы со строками
+library(readxl)   # для чтения xlsx
+library(tidytext) # токинезатор
+library(ggplot2)  # визуализация
+
+# для всего остального есть
+library(dplyr)
+```
+
+Готовим датасет с комментариями
+
+```{r}
+# читаем файлы с комментариями из женского корпуса
+
+women_en <- lapply(Sys.glob("women_en/*/*.csv"), read_csv)
+women_en_df <- bind_rows(women_en, .id = 'video_id')
+
+women_en_df <- women_en_df %>% 
+  select(video_id, comment_id = id, text = textOriginal)
+
+rm(women_en)
+
+# уберем лишние пробелы, табуляции, переносы строк
+
+women_en_df$text <- str_replace_all(women_en_df$text, "[\t\\n\r]+", " ")
+women_en_df$text <- str_squish(women_en_df$text)
+
+# короткие комментарии: 
+
+women_en_df$text[nchar(women_en_df$text)<=3]
+```
+
+Поскольку многие комментарии состоят из одного-нескольких слов или смайлов, в данном случае их классификация не имеет особого смысла. Некоторые из них не включают в себя ни одного слова из словаря, на котором обучалась модель.
+
+Прежде чем классифицировать комментарии, я удалю все комментарии короче 3 слов, предварительно сравнив длины текстов и словари в тренировочном датасете и в основном. Также я уберу все комментарии, в которых не встречается ни одного слова из словаря.
+---
+
+Готовим тренировочный датасет. Подробнее о нем:
+
+@inproceedings{samory2021sexism, 
+title={Call me sexist, but...: Revisiting Sexism Detection Using Psychological Scales and Adversarial Samples.}, 
+author={Samory, Mattia and Sen, Indira and Kohne, Julian and Fl{\"o}ck, Fabian and Wagner, Claudia}, 
+booktitle={Proceedings of the Fifteenth International Conference on Web and Social Media}, 
+year={2021}, 
+publisher={AAAI Press}}
+
+
+```{r}
+labeled_df <- read_excel(path="C:/Users/79175/Documents/pywd/YT/df_majority.xlsx")
+
+str(labeled_df)
+```
+
+```{r}
+labeled_df %>% 
+  select(dataset, text, content_binary, phrasing_binary, sexist_binary) %>%
+  head()
+```
+
+Датасет был собран из нескольких датасетов, использующих различные операционализации понятия сексистского высказывания.
+
+```{r}
+labeled_df$dataset <- as.factor(labeled_df$dataset)
+levels(labeled_df$dataset)
+```
+```{r}
+ggplot(labeled_df, aes(dataset, fill=sexist_binary)) +
+  geom_bar()
+```
+Колонка sexist_binary - это конъюнкция двух разметок: content и phrasing. Первая означает оценку содержания высказывания, а вторая - формулировку. Большая часть высказываний сексистская по параметру content. Phrasing в датасете мало:
+
+```{r}
+ggplot(labeled_df, aes(dataset, fill=phrasing_binary)) +
+  geom_bar()
+```
+
+
+Токинезируем тексты в обоих датафреймах, чтобы сравнить их длины.
+
+```{r}
+labeled_df <- labeled_df %>% 
+  select(text, sexist_binary) %>% 
+  mutate(sent_id = row_number())
+
+labeled_tokens <- labeled_df %>% 
+  unnest_tokens(word, text)
+
+labeled_count <- labeled_tokens %>%
+  group_by(sent_id) %>% 
+  count()
+
+summary(labeled_count$n)
+```
+
+Комментрарии из 2 токенов (эмоджи и знаки препринания не учитывались):
+
+```{r}
+labeled_df %>% 
+  filter(sent_id %in% labeled_count$sent_id[labeled_count$n==2])
+```
+
+Комментрарии из 3 токенов (эмоджи и знаки препринания не учитывались):
+
+```{r}
+labeled_df %>% 
+  filter(sent_id %in% labeled_count$sent_id[labeled_count$n==3])
+
+```
+
+```{r}
+women_tokens <- women_en_df %>% 
+  unnest_tokens(word, text)
+
+women_count <- women_tokens %>% 
+  group_by(comment_id) %>% 
+  count()
+
+list(women = summary(women_count$n), model = summary(labeled_count$n))
+```
+Медианная длина в датасете с комментариями несколько меньше, а средняя - несколько больше. Не считая максимальной длины, остальные показатели вполне сопоставимы.
+
+Посмотрим на словари.
+По закону Ципфа, можно ожидать, что большая часть комментариев будет содержать некоторые слова из словаря тренировочного датасета. Однако необходимо учитывать специфику этих высказываний: многие из них могут состоять из эмоджи, а также содержать ошибки.
+
+```{r}
+labeled_vocab <- unique(labeled_tokens$word)
+women_vocab <- unique(women_tokens$word)
+
+length(women_vocab[!women_vocab %in% labeled_vocab])  # 19704
+length(women_vocab[women_vocab %in% labeled_vocab])   # 4021
+```
+И так, в основном словаре есть 4021 слово из 7950, содержащихся в тренировочном.
+Посмотрим, сколько комментариев не содержат ни одного слова из тренировочного словаря.
+
+```{r}
+women_trunc <- women_tokens %>% 
+  ungroup() %>%  
+  filter(word %in% labeled_vocab) %>% 
+  select(comment_id) %>% 
+  distinct(comment_id)
+
+# получаем список комментариев, в которых содержится хотя бы одно слово из словаря нашей модели:
+women_trunc <- women_trunc$comment_id
+
+nrow(women_en_df) - length(women_trunc)
+
+women_count <-  women_count %>%         # оставляем комментарии длиннее 2 слов
+  filter(n > 2)
+women_trunc <- women_count$comment_id[women_count$comment_id %in% women_trunc]
+
+nrow(women_en_df) - length(women_trunc) # количество комментариев, которые мы уберем
+```
+Фильтруем и сохраняем 
+
+```{r}
+women_final <- women_en_df %>% 
+  filter(comment_id %in% women_trunc) %>% 
+  mutate(sent_id = row_number())
+
+write.csv(women_final, "women_en_df.csv", fileEncoding = "utf-8", row.names = F)
+```
+
