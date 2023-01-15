@@ -17,13 +17,11 @@ getwd()
 
 
 ```{r}
-library(readr)    # для чтения csv
-library(stringr)  # для работы со строками
-library(readxl)   # для чтения xlsx
+library(readr)    
+library(stringr)
+library(readxl)   
 library(tidytext) # токинезатор
-library(ggplot2)  # визуализация
-
-# для всего остального есть
+library(ggplot2)  
 library(dplyr)
 ```
 
@@ -146,10 +144,10 @@ list(women = summary(women_count$n), model = summary(labeled_count$n))
 labeled_vocab <- unique(labeled_tokens$word)
 women_vocab <- unique(women_tokens$word)
 
-length(women_vocab[!women_vocab %in% labeled_vocab])  # 19704
-length(women_vocab[women_vocab %in% labeled_vocab])   # 4021
+length(women_vocab[!women_vocab %in% labeled_vocab])  
+length(women_vocab[women_vocab %in% labeled_vocab])  
 ```
-И так, в основном словаре есть 4021 слово из 7950, содержащихся в тренировочном.
+И так, в основном словаре есть больше половины слов, содержащихся в тренировочном (число меняется с добавлением новых комментарием).
 Посмотрим, сколько комментариев не содержат ни одного слова из тренировочного словаря.
 
 ```{r}
@@ -180,3 +178,82 @@ women_final <- women_en_df %>%
 write.csv(women_final, "women_en_df.csv", fileEncoding = "utf-8", row.names = F)
 ```
 
+
+### Теперь подготовим корпус с комментариями к мужским каналам
+
+Готовим датасет с комментариями
+
+```{r}
+# читаем файлы с комментариями из женского корпуса
+
+men_en <- lapply(Sys.glob("men_en/*/*.csv"), read_csv)
+men_en_df <- bind_rows(men_en, .id = 'video_id')
+
+men_en_df <- men_en_df %>% 
+  select(video_id, comment_id = id, text = textOriginal)
+
+rm(men_en)
+
+# уберем лишние пробелы, табуляции, переносы строк
+
+men_en_df$text <- str_replace_all(men_en_df$text, "[\t\\n\r]+", " ")
+men_en_df$text <- str_squish(men_en_df$text)
+
+# короткие комментарии: 
+
+men_en_df$text[nchar(men_en_df$text)<=3]
+```
+
+
+Токинезируем тексты в новом датафрейме.
+
+```{r}
+men_tokens <- men_en_df %>% 
+  unnest_tokens(word, text)
+
+men_count <- men_tokens %>% 
+  group_by(comment_id) %>% 
+  count()
+
+list(men = summary(women_count$n), model = summary(labeled_count$n))
+```
+Результаты примерно те же.
+
+Посмотрим на словари.
+
+```{r}
+men_vocab <- unique(men_tokens$word)
+
+length(men_vocab[!men_vocab %in% labeled_vocab])  
+length(men_vocab[men_vocab %in% labeled_vocab])  
+```
+
+Посмотрим, сколько комментариев не содержат ни одного слова из тренировочного словаря.
+
+```{r}
+men_trunc <- men_tokens %>% 
+  ungroup() %>%  
+  filter(word %in% labeled_vocab) %>% 
+  select(comment_id) %>% 
+  distinct(comment_id)
+
+# получаем список комментариев, в которых содержится хотя бы одно слово из словаря нашей модели:
+men_trunc <- men_trunc$comment_id
+
+nrow(men_en_df) - length(men_trunc)
+
+men_count <-  men_count %>%         # оставляем комментарии длиннее 2 слов
+  filter(n > 2)
+men_trunc <- men_count$comment_id[men_count$comment_id %in% men_trunc]
+
+nrow(men_en_df) - length(men_trunc) # количество комментариев, которые мы уберем
+```
+Фильтруем и сохраняем 
+
+```{r}
+men_final <- men_en_df %>% 
+  filter(comment_id %in% men_trunc) %>% 
+  mutate(sent_id = row_number())
+
+write.csv(men_final, "men_en_df.csv", fileEncoding = "utf-8", row.names = F)
+```
