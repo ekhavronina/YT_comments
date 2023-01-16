@@ -1,0 +1,443 @@
+---
+title: "call_me_sexist_classificator"
+author: "Evgenia Khavronina"
+date: "2023-01-13"
+output: html_document
+---
+
+Размеченный дата-сет с сексистскими высказываниями:
+
+@inproceedings{samory2021sexism, 
+title={Call me sexist, but...: Revisiting Sexism Detection Using Psychological Scales and Adversarial Samples.}, 
+author={Samory, Mattia and Sen, Indira and Kohne, Julian and Fl{\"o}ck, Fabian and Wagner, Claudia}, 
+booktitle={Proceedings of the Fifteenth International Conference on Web and Social Media}, 
+year={2021}, 
+publisher={AAAI Press}}
+
+
+Загружаем библиотеки, устанавливаем рабочую директорию
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = "C:/Users/79175/Documents/pywd/YT")
+
+setwd("C:/Users/79175/Documents/pywd/YT")
+getwd()
+```
+
+```{r}
+library(readr)
+library(stringr)
+library(dplyr)
+library(tidytext)
+library(stopwords)
+library(quanteda)
+library(mallet)
+library(LDAvis)
+library(servr)
+library(textstem)
+library(ggplot2)
+library(tidyr)
+library(purrr)
+library(quanteda.textplots)
+library(caret)
+library(glmnet)
+library(readxl)
+
+```
+
+```{r}
+
+# читаем файлы с комментариями из женского корпуса
+
+# women_en <- lapply(Sys.glob("women_en/*/*.csv"), read_csv)
+
+women_en_ds <- lapply(Sys.glob("women_en/data_science/*.csv"), read_csv)
+women_en_p <- lapply(Sys.glob("women_en/programming/*.csv"), read_csv)
+
+women_en_ds <- bind_rows(women_en_ds, .id = 'video_id')
+women_en_p <- bind_rows(women_en_p, .id = 'video_id')
+
+women_en_ds <- women_en_ds %>% 
+  mutate(subset = "ds")
+women_en_p <- women_en_p %>% 
+  mutate(subset = "p")
+
+women_en_ds <- women_en_ds %>% 
+  select(id, text = textOriginal, video_id)
+women_en_p <- women_en_p %>% 
+  select(id, text = textOriginal, video_id)
+
+
+women_en_df <- women_en_ds %>% 
+  bind_rows(women_en_p)
+
+women_ru_df <- women_ru_df %>% 
+  select(id, text = textOriginal, video_id)
+
+
+# чистим текст
+
+women_en_df$clean <- gsub("[[:punct:]]", " ", women_en_df$text)
+women_en_df$clean <- str_replace_all(women_en_df$clean, "[0-9]+", " ")
+women_en_df$clean <- str_replace_all(women_en_df$clean, "[\t\\n\r]+", " ")
+women_en_df$clean <- str_squish(women_en_df$clean)
+
+women_en_df$clean[nchar(women_en_df$clean)<=2]
+```
+
+```{r}
+women_en_df <- women_en_df %>% 
+  filter(nchar(clean) > 2) %>% 
+  mutate(sex = "women")
+
+rm(women_en)
+
+```
+
+
+
+```{r}
+
+# токинезация
+
+women_en_lem <- women_en_df %>% 
+  group_by(video_id, comment_id) %>% 
+  unnest_tokens(word, clean)
+
+# лемматизация
+
+women_en_lem$lemma <- lemmatize_words(women_en_lem$word) 
+
+head(women_en_lem)
+```
+
+Cмотрим частотность
+
+```{r}
+sw <- stopwords("en")
+w_freq_word <- women_en_lem %>% 
+  ungroup() %>% 
+  filter(!lemma %in% sw) %>%
+  filter(nchar(lemma) > 2) %>% 
+  count(lemma, sort=T)  # частотность слов
+head(w_freq_word, 20)
+```
+
+```{r}
+rm(w_freq_word)
+```
+
+
+Читаем размеченные данные
+
+```{r}
+labeled_df <- read_excel(path="C:/Users/79175/Documents/pywd/YT/df_majority.xlsx")
+
+str(labeled_df)
+```
+
+```{r}
+labeled_df %>% 
+  select(text, content_binary, phrasing_binary, sexist_binary) %>%
+  head()
+```
+
+```{r}
+ggplot(labeled_df, aes(dataset, fill=sexist_binary)) +
+  geom_bar()
+```
+
+Content указывает на содержание высказывания,
+phrasing указывает на формулировку высказывания.
+
+```{r}
+sample(labeled_df$text[labeled_df$content_binary == T 
+                       & labeled_df$phrasing_binary == F], 1)
+```
+
+```{r}
+sample(labeled_df$text[labeled_df$content_binary == F 
+                       & labeled_df$phrasing_binary == T], 1)
+```
+
+```{r}
+labeled_df %>% 
+  group_by(content_binary, phrasing_binary) %>% 
+  count()
+```
+
+Мета-данные
+
+```{r}
+labeled_df <- labeled_df %>% 
+  mutate(sent_id = row_number())
+
+labeled_meta <- labeled_df %>% 
+  select(sent_id, sexist_binary)
+labeled_meta$sexist_binary <- as.factor(labeled_meta$sexist_binary)
+levels(labeled_meta$sexist_binary) <- c("non-sexist", "sexist")
+
+```
+
+Трансформируем данные в длинный формат и чистим
+
+```{r}
+labeled_df$clean <- gsub("[[:punct:]]", " ", labeled_df$text)
+labeled_df$clean <- str_replace_all(labeled_df$clean, "[0-9]+", " ")
+labeled_df$clean <- str_replace_all(labeled_df$clean, "[\t\\n\r]+", " ")
+labeled_df$clean <- str_squish(labeled_df$clean)
+
+labeled_long <- labeled_df %>% 
+  group_by(sent_id, sexist_binary) %>% 
+  unnest_tokens(word, clean) 
+
+labeled_long$lemma <- lemmatize_words(labeled_long$word)
+
+labeled_long <- labeled_long %>% 
+#  filter(! lemma %in% sw) %>% 
+  select(-word)
+
+labeled_nested <- labeled_long %>%
+  group_by(sent_id, sexist_binary) %>% 
+  tidyr::nest(lemma) %>%
+  mutate(text = map(data, unlist), 
+         text = map_chr(text, paste, collapse = " ")) 
+
+labeled_nested$sexist_binary <- as.factor(labeled_nested$sexist_binary)
+levels(labeled_nested$sexist_binary) <- c("non-sexist", "sexist")
+
+levels(labeled_nested$sexist_binary)
+```
+
+Создаем матрицу термов-документов
+
+```{r}
+labeled_dtm <- labeled_long %>%
+  ungroup() %>% 
+  count(sent_id, lemma) %>%
+  bind_tf_idf(lemma, sent_id, n) %>% 
+  cast_dfm(sent_id, lemma, tf_idf)
+
+labeled_dtm
+```
+
+```{r}
+labeled_clean <- labeled_dtm %>%
+    dfm_wordstem(language = "en") %>%
+    dfm_trim(min_docfreq=0.10)
+labeled_clean
+
+```
+
+Тренировочная и тестовая выборка (10%)
+
+```{r}
+set.seed(42)
+
+split <- createDataPartition(y=labeled_meta$sexist_binary, p = 0.9, list = FALSE)
+train.data <- labeled_dtm %>% 
+  dfm_subset(rownames(labeled_dtm) %in% labeled_meta$sent_id[split])
+test.data <- labeled_dtm %>% 
+  dfm_subset(!rownames(labeled_dtm) %in% labeled_meta$sent_id[split]) 
+response <- as.factor(labeled_nested$sexist_binary)
+trainY <- response[split]
+testY <- response[-split]
+```
+
+Обучаем модель
+
+```{r}
+#cv.ridge <- cv.glmnet(
+#  x=train.data, y=trainY, alpha=0, family="binomial", type.measure="auc", nfolds = 5, standardize=FALSE)
+```
+
+```{r}
+cv.lasso <- cv.glmnet(
+  x=train.data, y=trainY, alpha=1, family="binomial", type.measure="auc", nfolds = 5, standardize=FALSE)
+```
+
+```{r}
+cv.elasticnet <- cv.glmnet(
+  x=train.data, y=trainY, family="binomial", type.measure="auc", nfolds = 5, standardize=FALSE)
+```
+
+Предсказываем лейбл
+
+```{r}
+predicted.lasso <- as.factor(predict(cv.lasso, test.data, type="class"))
+#predicted.ridge <- as.factor(predict(cv.ridge, test.data, type="class"))
+predicted.elasticnet <- as.factor(predict(cv.elasticnet, test.data, type="class"))
+```
+
+Следующая модель без стоп-слов предсказывает примерно одинаково с labeled_dtm и с labeled_clean.
+Лучше всего предсказывает со стоп-словами:
+
+```{r}
+cm.lasso <- confusionMatrix(
+  data = predicted.lasso, reference = testY, positive="sexist", mode = "prec_recall")
+cm.lasso
+
+# без стоп-слов:
+# с labeled_clean accuracy 0.75, p-value <2e-16, kappa 0.51, precision 0.75
+# с labeled_dtm accuracy 0.74, p-value <2e-16, kappa 0.49, precision 0.74
+```
+
+```{r}
+#cm.ridge <- confusionMatrix(
+#  data = predicted.ridge, reference = testY, positive="sexist", mode = "prec_recall")
+#cm.ridge
+```
+
+Следующая модель без стоп-слов предсказывает немного лучше с labeled_dtm, чем с labeled_clean.
+Лучше всего работает со стоп-словами (без удаления стоп-слов).
+
+```{r}
+cm.elasticnet <- confusionMatrix(
+  data = predicted.elasticnet, reference = testY, positive="sexist", mode = "prec_recall")
+cm.elasticnet
+
+# без стоп-слов:
+# с labeled_clean accuracy 0.73, p-value 1.93e-15, kappa 0.46, precision 0.71
+# с labeled_dtm accuracy 0.76, p-value <2e-16, kappa 0.52, precision 0.75
+```
+
+Анализ переменных
+
+```{r}
+coef(cv.lasso, cv.lasso$lambda.min) %>%
+  as.matrix %>% as.data.frame %>%
+  tibble::rownames_to_column() %>%
+  arrange(-abs(`s1`)) %>%
+  head(100)
+  
+```
+
+```{r}
+#coef(cv.ridge, cv.ridge$lambda.min) %>%
+#  as.matrix %>% as.data.frame %>%
+#  tibble::rownames_to_column() %>%
+#  arrange(-abs(`s1`)) %>%
+#  head(100)
+```
+
+```{r}
+coef(cv.elasticnet, cv.elasticnet$lambda.min) %>%
+  as.matrix %>% as.data.frame %>%
+  tibble::rownames_to_column() %>%
+  arrange(-abs(`s1`)) %>%
+  head(100)
+```
+
+
+### Используем модель на комментариях
+
+Создадим список слов, которые есть в тренировочном датасете
+
+```{r}
+vocab <- unique(labeled_long$lemma)
+length(vocab)
+```
+
+
+```{r}
+#write.csv(women_en_df, "women_en_df.csv", fileEncoding = "utf-8")
+
+women_long <- women_en_lem %>% 
+  ungroup() %>% 
+#  filter(! lemma %in% sw) %>% 
+  filter(lemma %in% vocab) %>% 
+  select(-word, -video_id)
+
+nrow(women_en_lem)
+nrow(women_long)
+
+woman_vocab <- unique(women_long$lemma)
+length(woman_vocab) # теперь уникальных слов в датафрейме меньше, чем в тренировочном
+```
+
+Комментарии, которые не содержат ни одного слова из словаря тренировочного
+датасета (при фильтрации они полностью выбыли)
+
+```{r}
+final_id <- unique(women_long$comment_id)
+
+unidentified_comments <- women_en_df %>% 
+  filter(! comment_id %in% final_id)
+
+unidentified_comments <- unidentified_comments %>% 
+  mutate(result = "unidentified")
+
+head(unidentified_comments)
+```
+
+Слова, которых нет в датасете с комментами, но которые есть в матрице:
+
+```{r}
+remain_vocab <- vocab[!vocab %in% woman_vocab]
+sample(remain_vocab, 10)
+```
+Добавим их
+
+```{r}
+remain <- data.frame(lemma = remain_vocab,
+                     comment_id = "remain")
+head(remain)
+```
+
+
+```{r}
+women_long <- bind_rows(women_long, remain)
+tail(women_long)
+```
+
+```{r}
+women_nested <- women_long %>%
+  group_by(comment_id) %>% 
+  tidyr::nest(lemma) %>%
+  mutate(text = map(data, unlist), 
+         text = map_chr(text, paste, collapse = " ")) 
+
+length(unique(women_long$lemma)) == length(vocab)
+```
+
+Создаем матрицу термов-документов
+
+```{r}
+women_dtm <- women_long %>%
+  ungroup() %>% 
+  count(comment_id, lemma) %>%
+  bind_tf_idf(lemma, comment_id, n) %>% 
+  cast_dfm(comment_id, lemma, tf_idf)
+
+women_dtm
+```
+
+Используем классификатор
+
+```{r}
+predicted.elasticnet.women <- as.factor(predict(cv.elasticnet, women_dtm, type="class"))
+```
+
+```{r}
+women_result <- women_nested %>% 
+  select(-data) %>% 
+  bind_cols(result = predicted.elasticnet.women) %>% 
+  left_join(women_en_df[c(2,3)], by="comment_id")
+#  left_join(prediction_result, by="comment_id")
+
+head(women_result)
+```
+```{r}
+women_result %>% 
+  filter(result == "sexist") %>% 
+  View()
+
+women_result %>% 
+  group_by(result) %>% 
+  count()
+```
+
+
+
+Что ж. Работаем дальше...
