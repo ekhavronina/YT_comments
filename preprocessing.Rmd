@@ -41,9 +41,11 @@ women_en_p <- women_en_p %>%
   mutate(subset = "p")
 
 women_en_ds <- women_en_ds %>% 
-  select(id, text = textOriginal, video_id)
+  select(id, text = textOriginal, video_id) %>% 
+  mutate(category = 'DS')
 women_en_p <- women_en_p %>% 
-  select(id, text = textOriginal, video_id)
+  select(id, text = textOriginal, video_id) %>% 
+  mutate(category = 'P')
 
 
 # уберем лишние пробелы, табуляции, переносы строк
@@ -54,12 +56,13 @@ women_en_ds$text <- str_squish(women_en_ds$text)
 women_en_p$text <- str_replace_all(women_en_p$text, "[\t\\n\r]+", " ")
 women_en_p$text <- str_squish(women_en_p$text)
 
-
+women_en <- women_en_ds %>% 
+  bind_rows(women_en_p)
 
 write.csv(women_en_ds, "women_en_ds.csv", fileEncoding = "utf-8", row.names = F)
 write.csv(women_en_p, "women_en_p.csv", fileEncoding = "utf-8", row.names = F)
 
-
+write.csv(women_en, "women_en.csv", fileEncoding = "utf-8", row.names = F)
 
 # короткие комментарии 
 
@@ -172,14 +175,11 @@ men_en_ds <- bind_rows(men_en_ds, .id = 'video_id')
 men_en_p <- bind_rows(men_en_p, .id = 'video_id')
 
 men_en_ds <- men_en_ds %>% 
-  mutate(subset = "ds")
+  select(id, text = textOriginal, video_id) %>% 
+  mutate(category = "DS")
 men_en_p <- men_en_p %>% 
-  mutate(subset = "p")
-
-men_en_ds <- men_en_ds %>% 
-  select(id, text = textOriginal, video_id)
-men_en_p <- men_en_p %>% 
-  select(id, text = textOriginal, video_id)
+  select(id, text = textOriginal, video_id) %>% 
+  mutate(category = "P")
 
 
 # уберем лишние пробелы, табуляции, переносы строк
@@ -190,11 +190,18 @@ men_en_ds$text <- str_squish(men_en_ds$text)
 men_en_p$text <- str_replace_all(men_en_p$text, "[\t\\n\r]+", " ")
 men_en_p$text <- str_squish(men_en_p$text)
 
-
+men_en <- men_en_ds %>% 
+  bind_rows(men_en_p)
 
 write.csv(men_en_ds, "men_en_ds.csv", fileEncoding = "utf-8", row.names = F)
 write.csv(men_en_p, "men_en_p.csv", fileEncoding = "utf-8", row.names = F)
 
+write.csv(men_en, "men_en.csv", fileEncoding = "utf-8", row.names = F)
+```
+
+Случайные выборки
+
+```{r}
 
 random_id <- sample(men_en_p$id, 1000)
 m_p_en_samples <- men_en_p %>% 
@@ -234,15 +241,12 @@ women_ru_ds <- bind_rows(women_ru_ds, .id = 'video_id')
 women_ru_p <- bind_rows(women_ru_p, .id = 'video_id')
 
 women_ru_ds <- women_ru_ds %>% 
-  mutate(subset = "ds")
+  select(id, text = textOriginal, video_id) %>% 
+  mutate(category = "DS")
 women_ru_p <- women_ru_p %>% 
-  mutate(subset = "p")
+  select(id, text = textOriginal, video_id) %>% 
+  mutate(category = "P")
 
-
-women_ru_ds <- women_ru_ds %>% 
-  select(id, text = textOriginal, video_id)
-women_ru_p <- women_ru_p %>% 
-  select(id, text = textOriginal, video_id)
 
 
 # уберем лишние пробелы, табуляции, переносы строк
@@ -253,14 +257,18 @@ women_ru_ds$text <- str_squish(women_ru_ds$text)
 women_ru_p$text <- str_replace_all(women_ru_p$text, "[\t\\n\r]+", " ")
 women_ru_p$text <- str_squish(women_ru_p$text)
 
-
-
+women_ru <- women_ru_ds %>% 
+  bind_rows(women_ru_p)
 
 write.csv(women_ru_ds, "women_ru_ds.csv", fileEncoding = "utf-8", row.names = F)
 write.csv(women_ru_p, "women_ru_p.csv", fileEncoding = "utf-8", row.names = F)
 
+write.csv(women_ru, "women_ru.csv", fileEncoding = "utf-8", row.names = F)
+```
 
+Случайные выборки
 
+```{r}
 random_id <- sample(women_ru_p$id, 1000)
 w_p_ru_samples <- women_ru_p %>% 
   filter(id %in% random_id)
