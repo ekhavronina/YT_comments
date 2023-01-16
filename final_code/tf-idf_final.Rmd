@@ -6,13 +6,7 @@ output: html_document
 ---
 
 Размеченный дата-сет с сексистскими высказываниями:
-
-@inproceedings{samory2021sexism, 
-title={Call me sexist, but...: Revisiting Sexism Detection Using Psychological Scales and Adversarial Samples.}, 
-author={Samory, Mattia and Sen, Indira and Kohne, Julian and Fl{\"o}ck, Fabian and Wagner, Claudia}, 
-booktitle={Proceedings of the Fifteenth International Conference on Web and Social Media}, 
-year={2021}, 
-publisher={AAAI Press}}
+https://github.com/gesiscss/theory-driven-sexism-detection
 
 
 Загружаем библиотеки, устанавливаем рабочую директорию
