@@ -1,0 +1,272 @@
+---
+title: "call_me_sexist_prep"
+author: "Evgenia Khavronina"
+date: "2023-01-15"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = "C:/Users/79175/Documents/pywd/YT")
+
+getwd()
+```
+
+Библиотеки
+
+
+```{r}
+library(readr)    
+library(stringr)
+library(readxl)   
+library(tidytext) 
+library(ggplot2)  
+library(dplyr)
+```
+
+Готовим датасет с комментариями
+
+```{r}
+# читаем файлы с комментариями из женского корпуса
+
+women_en_ds <- lapply(Sys.glob("women_en/data_science/*.csv"), read_csv)
+women_en_p <- lapply(Sys.glob("women_en/programming/*.csv"), read_csv)
+
+women_en_ds <- bind_rows(women_en_ds, .id = 'video_id')
+women_en_p <- bind_rows(women_en_p, .id = 'video_id')
+
+women_en_ds <- women_en_ds %>% 
+  mutate(subset = "ds")
+women_en_p <- women_en_p %>% 
+  mutate(subset = "p")
+
+women_en_ds <- women_en_ds %>% 
+  select(id, text = textOriginal, video_id)
+women_en_p <- women_en_p %>% 
+  select(id, text = textOriginal, video_id)
+
+
+# уберем лишние пробелы, табуляции, переносы строк
+
+women_en_ds$text <- str_replace_all(women_en_ds$text, "[\t\\n\r]+", " ")
+women_en_ds$text <- str_squish(women_en_ds$text)
+
+women_en_p$text <- str_replace_all(women_en_p$text, "[\t\\n\r]+", " ")
+women_en_p$text <- str_squish(women_en_p$text)
+
+
+
+write.csv(women_en_ds, "women_en_ds.csv", fileEncoding = "utf-8", row.names = F)
+write.csv(women_en_p, "women_en_p.csv", fileEncoding = "utf-8", row.names = F)
+
+
+
+# короткие комментарии 
+
+women_en_df$text[nchar(women_en_df$text)<=3]
+
+# генерируем случайные выборки
+
+random_id <- sample(women_en_ds$id, 1000)
+w_ds_en_samples <- women_en_ds %>% 
+  filter(id %in% random_id)
+
+write.csv(w_ds_en_samples, "w_ds_en_samples.csv", fileEncoding = "utf-8")
+
+
+
+random_id <- sample(women_en_p$id, 1000)
+w_p_en_samples <- women_en_p %>% 
+  filter(id %in% random_id)
+
+write.csv(w_p_en_samples, "w_p_en_samples.csv", fileEncoding = "utf-8")
+
+```
+
+Готовим тренировочный датасет
+
+```{r}
+labeled_df <- read_excel(path="C:/Users/79175/Documents/pywd/YT/df_majority.xlsx")
+
+str(labeled_df)
+```
+
+```{r}
+labeled_df %>% 
+  select(dataset, text, content_binary, phrasing_binary, sexist_binary) %>%
+  head()
+```
+
+Датасет был собран из нескольких датасетов, использующих различные операционализации понятия сексистского высказывания.
+
+```{r}
+labeled_df$dataset <- as.factor(labeled_df$dataset)
+levels(labeled_df$dataset)
+```
+```{r}
+ggplot(labeled_df, aes(dataset, fill=sexist_binary)) +
+  geom_bar()
+```
+Колонка sexist_binary - это конъюнкция двух разметок: content и phrasing. Первая означает оценку содержания высказывания, а вторая - формулировку. Большая часть высказываний сексистская по параметру content. Phrasing в датасете мало:
+
+```{r}
+ggplot(labeled_df, aes(dataset, fill=phrasing_binary)) +
+  geom_bar()
+```
+
+
+Токинезируем тексты в обоих датафреймах, чтобы сравнить их длины.
+
+```{r}
+labeled_df <- labeled_df %>% 
+  select(text, sexist_binary) %>% 
+  mutate(sent_id = row_number())
+
+labeled_tokens <- labeled_df %>% 
+  unnest_tokens(word, text)
+
+labeled_count <- labeled_tokens %>%
+  group_by(sent_id) %>% 
+  count()
+
+summary(labeled_count$n)
+```
+
+Комментрарии из 2 токенов (эмоджи и знаки препринания не учитывались):
+
+```{r}
+labeled_df %>% 
+  filter(sent_id %in% labeled_count$sent_id[labeled_count$n==2])
+```
+
+Комментрарии из 3 токенов (эмоджи и знаки препринания не учитывались):
+
+```{r}
+labeled_df %>% 
+  filter(sent_id %in% labeled_count$sent_id[labeled_count$n==3])
+
+```
+
+```{r}
+women_tokens <- women_en_df %>% 
+  unnest_tokens(word, text)
+
+women_count <- women_tokens %>% 
+  group_by(comment_id) %>% 
+  count()
+
+list(women = summary(women_count$n), model = summary(labeled_count$n))
+```
+
+
+### Теперь подготовим корпус с комментариями к мужским каналам
+
+Готовим датасет с комментариями
+
+```{r}
+
+men_en_ds <- lapply(Sys.glob("men_en/data_science/*.csv"), read_csv)
+men_en_p <- lapply(Sys.glob("men_en/programming/*.csv"), read_csv)
+
+men_en_ds <- bind_rows(men_en_ds, .id = 'video_id')
+men_en_p <- bind_rows(men_en_p, .id = 'video_id')
+
+men_en_ds <- men_en_ds %>% 
+  mutate(subset = "ds")
+men_en_p <- men_en_p %>% 
+  mutate(subset = "p")
+
+men_en_ds <- men_en_ds %>% 
+  select(id, text = textOriginal, video_id)
+men_en_p <- men_en_p %>% 
+  select(id, text = textOriginal, video_id)
+
+
+# уберем лишние пробелы, табуляции, переносы строк
+
+men_en_ds$text <- str_replace_all(men_en_ds$text, "[\t\\n\r]+", " ")
+men_en_ds$text <- str_squish(men_en_ds$text)
+
+men_en_p$text <- str_replace_all(men_en_p$text, "[\t\\n\r]+", " ")
+men_en_p$text <- str_squish(men_en_p$text)
+
+
+
+write.csv(men_en_ds, "men_en_ds.csv", fileEncoding = "utf-8", row.names = F)
+write.csv(men_en_p, "men_en_p.csv", fileEncoding = "utf-8", row.names = F)
+
+
+random_id <- sample(men_en_p$id, 1000)
+m_p_en_samples <- men_en_p %>% 
+  filter(id %in% random_id)
+
+write.csv(m_p_en_samples, "m_p_en_samples.csv", fileEncoding = "utf-8")
+
+random_id <- sample(men_en_ds$id, 1000)
+m_ds_en_samples <- men_en_ds %>% 
+  filter(id %in% random_id)
+
+write.csv(m_ds_en_samples, "m_ds_en_samples.csv", fileEncoding = "utf-8")
+
+```
+
+
+Токинезируем тексты в новом датафрейме.
+
+```{r}
+men_tokens <- men_en_df %>% 
+  unnest_tokens(word, text)
+
+men_count <- men_tokens %>% 
+  group_by(comment_id) %>% 
+  count()
+
+list(men = summary(women_count$n), model = summary(labeled_count$n))
+```
+
+### Женский русскоязычный корпус
+
+```{r}
+women_ru_ds <- lapply(Sys.glob("women_ru/data_science/*.csv"), read_csv)
+women_ru_p <- lapply(Sys.glob("women_ru/programming/*.csv"), read_csv)
+
+women_ru_ds <- bind_rows(women_ru_ds, .id = 'video_id')
+women_ru_p <- bind_rows(women_ru_p, .id = 'video_id')
+
+women_ru_ds <- women_ru_ds %>% 
+  mutate(subset = "ds")
+women_ru_p <- women_ru_p %>% 
+  mutate(subset = "p")
+
+
+women_ru_ds <- women_ru_ds %>% 
+  select(id, text = textOriginal, video_id)
+women_ru_p <- women_ru_p %>% 
+  select(id, text = textOriginal, video_id)
+
+
+# уберем лишние пробелы, табуляции, переносы строк
+
+women_ru_ds$text <- str_replace_all(women_ru_ds$text, "[\t\\n\r]+", " ")
+women_ru_ds$text <- str_squish(women_ru_ds$text)
+
+women_ru_p$text <- str_replace_all(women_ru_p$text, "[\t\\n\r]+", " ")
+women_ru_p$text <- str_squish(women_ru_p$text)
+
+
+
+
+write.csv(women_ru_ds, "women_ru_ds.csv", fileEncoding = "utf-8", row.names = F)
+write.csv(women_ru_p, "women_ru_p.csv", fileEncoding = "utf-8", row.names = F)
+
+
+
+random_id <- sample(women_ru_p$id, 1000)
+w_p_ru_samples <- women_ru_p %>% 
+  filter(id %in% random_id)
+
+write.csv(w_p_ru_samples, "w_p_ru_samples.csv", fileEncoding = "utf-8")
+
+
+```
+
