@@ -1,0 +1,310 @@
+---
+title: "Comments_classification"
+output: html_notebook
+---
+Загружаем библиотеки, устанавливаем рабочую директорию
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = "C:/Users/79175/Documents/rwd/YT")
+
+getwd()
+```
+
+```{r}
+library(readr)
+library(stringr)
+library(dplyr)
+library(tidytext)
+library(stopwords)
+library(quanteda)
+library(mallet)
+library(LDAvis)
+library(servr)
+library(textstem)
+library(ggplot2)
+library(tidyr)
+library(purrr)
+library(quanteda.textplots)
+library(caret)
+library(glmnet)
+
+```
+
+```{r}
+
+# читаем файлы
+
+men_en <- lapply(Sys.glob("men_en/*/*.csv"), read_csv)
+men_en_df <- bind_rows(men_en, .id = 'video_id')
+
+men_en_df <- men_en_df %>% 
+  select(video_id, comment_id = id, textOriginal)
+
+
+# чистим текст
+
+men_en_df$clean <- gsub("[[:punct:]]", " ", men_en_df$textOriginal)
+men_en_df$clean <- str_replace_all(men_en_df$clean, "[0-9]+", " ")
+men_en_df$clean <- str_replace_all(men_en_df$clean, "[\t\\n\r]+", " ")
+men_en_df$clean <- str_squish(men_en_df$clean)
+
+# короткие комментарии:
+
+men_en_df$clean[nchar(men_en_df$clean)<=2]
+```
+
+```{r}
+# оставляем комментарии длиннее 2 символов
+
+men_en_df <- men_en_df %>% 
+  filter(nchar(clean) > 2)
+
+
+# токинезация
+
+men_en_lem <- men_en_df %>% 
+  group_by(video_id) %>% 
+  unnest_tokens(word, clean)
+
+# лемматизация
+
+men_en_lem$lemma <- lemmatize_words(men_en_lem$word) 
+
+head(men_en_lem)
+```
+
+Cмотрим частотность
+
+```{r}
+m_freq_word <- men_en_lem %>% 
+  ungroup() %>% 
+  count(lemma, sort=T)  # частотность слов
+head(m_freq_word, 20)   # без удаления стоп-слов:
+```
+
+```{r}
+
+# читаем файлы второго корпуса
+
+women_en <- lapply(Sys.glob("women_en/*/*.csv"), read_csv)
+women_en_df <- bind_rows(women_en, .id = 'video_id')
+
+women_en_df <- women_en_df %>% 
+  select(video_id, comment_id = id, textOriginal)
+
+
+# чистим текст
+
+women_en_df$clean <- gsub("[[:punct:]]", " ", women_en_df$textOriginal)
+women_en_df$clean <- str_replace_all(women_en_df$clean, "[0-9]+", " ")
+women_en_df$clean <- str_replace_all(women_en_df$clean, "[\t\\n\r]+", " ")
+women_en_df$clean <- str_squish(women_en_df$clean)
+
+women_en_df$clean[nchar(women_en_df$clean)<=2]
+
+women_en_df <- women_en_df %>% 
+  filter(nchar(clean) > 2) %>% 
+  mutate(sex = "women")
+```
+
+```{r}
+
+# токинезация
+
+women_en_lem <- women_en_df %>% 
+  group_by(video_id) %>% 
+  unnest_tokens(word, clean)
+
+# лемматизация
+
+women_en_lem$lemma <- lemmatize_words(women_en_lem$word) 
+
+head(women_en_lem)
+```
+
+Cмотрим частотность
+
+```{r}
+w_freq_word <- women_en_lem %>% 
+  ungroup() %>% 
+  count(lemma, sort=T)  # частотность слов
+head(w_freq_word, 20)
+```
+
+Сравним частотности по корпусам
+
+```{r}
+m_freq_word <- m_freq_word %>% 
+  mutate(id = row_number()) %>%
+  mutate(ipm = round(n*1000000/nrow(men_en_lem))) # ipm - вхождения на миллион
+
+w_freq_word <- w_freq_word %>% 
+  mutate(id = row_number()) %>%
+  mutate(ipm = round(n*1000000/nrow(women_en_lem)))
+
+
+freqs <- m_freq_word %>% 
+  full_join(w_freq_word, by = "id", suffix = c("_men", "_women")) %>%
+  select(id, lemma_men, ipm_men, lemma_women, ipm_women)
+
+freqs
+```
+
+Хотя мужской корпус почти в два раза больше, ipm первых слов оказались очень похожи.
+
+Построим график частотности без гапаксов (слов, встречающихся в корпусе 1 раз) и стоп-слов в женском корпусе:
+
+```{r}
+sw <- stopwords("en")    # стандартные стоп-слова
+
+w_freq_word %>%
+  filter(!lemma %in% sw) %>%
+  filter(nchar(lemma) > 2) %>%
+  filter(n > 1) %>%
+  arrange(desc(id)) %>%
+  ggplot(aes(id, ipm)) +
+    geom_line()
+
+# полученное распределение было ожидаемо, по закону Ципфа
+
+```
+
+Сравним 30 самых частотных слов в двух корпусах без стоп-слов
+
+```{r}
+w_freq30 <- w_freq_word %>%
+  filter(!lemma %in% sw) %>%
+  filter(nchar(lemma) > 2) %>%
+  arrange(desc(ipm)) %>%
+  head(30) %>%
+  mutate(id = row_number())
+
+m_freq30 <- m_freq_word %>%
+  filter(!lemma %in% sw) %>%
+  filter(nchar(lemma) > 2) %>%
+  arrange(desc(ipm)) %>%
+  head(30) %>%
+  mutate(id = row_number())
+
+
+freqs30 <- m_freq30 %>% 
+  full_join(w_freq30, by = "id", suffix = c("_men", "_women")) %>%
+  select(id, lemma_men, ipm_men, lemma_women, ipm_women)
+
+freqs30
+
+```
+
+Построим график
+
+```{r}
+ggplot(freqs30) +
+  geom_point(aes(id, ipm_men), color = "blue", alpha = 0.7) +
+  geom_point(aes(id, ipm_women), color = "red", alpha = 0.7)
+```
+
+Хотя некоторые слова отличаются, их частотности оказываются примерно одинаковые. Учтем также, что мужской корпус больше почти в два раза, так что показатель вхождения на миллион (ipm) более репрезентативен для него, поскольку учитывает большее колличество гапаксов. Тогда как ipm женского корпуса не учитывает вероятность встретить новые низко-частотные слова в этом миллионе.
+
+### Классификация
+
+Сделаем модель, которая будет определять, мужское или женское видео, по комментариям.
+
+```{r}
+# Добавляю пометки м/ж
+
+men_en_lem <- men_en_lem %>%
+  mutate(sex = "men")
+
+# Я уменьшала размер мужского корпуса, чтобы он был примерно равен женскому
+
+#men_en_lem1 <- men_en_lem %>%
+#  filter(video_id < 25)
+
+women_en_lem <- women_en_lem %>%
+  mutate(sex = "women")
+
+# Объединяем корпусы
+
+en_df <- bind_rows(men_en_lem, women_en_lem) %>%
+  mutate(sent_id = paste(sex, video_id, sep="_")) %>%   # добавляю уникальные id
+  ungroup() %>%
+  select(-word, -video_id) %>%
+  filter(!str_detect(lemma, "[А-Яа-я]"))   # надо было раньше убрать русские слова
+
+# Размеры корпусов:
+
+en_df %>% count(sex)
+
+```
+
+Пора почистить окружение
+
+```{r}
+rm(men_en)
+rm(women_en)
+rm(m_freq_word)
+rm(w_freq_word)
+rm(men_en_df)
+rm(women_en_df)
+rm(w_freq30)
+rm(m_freq30)
+```
+
+Создаем терм-документную матрицу для обучения классификатора с помощью меры TF-IDF
+
+```{r}
+en.longmeta <- en_df %>% 
+  distinct(sex, sent_id)
+
+en.nested <- en_df %>%
+  tidyr::nest(lemma) %>%
+  mutate(text = map(data, unlist), 
+         text = map_chr(text, paste, collapse = " ")) 
+
+en.dtm <- en_df %>%
+    count(sent_id, lemma) %>%
+    bind_tf_idf(lemma, sent_id, n) %>% 
+    cast_dfm(sent_id, lemma, tf_idf)
+
+# Матрицы терм-документов:
+en.dtm
+en.clean <- en.dtm %>%
+    dfm_wordstem(language = "en") #%>%
+#    dfm_trim(min_docfreq=0.1) 
+en.clean
+
+```
+
+Делим корпус на тестовый и тренировочный (10% выборка)
+
+```{r}
+
+set.seed(42)
+
+split <- createDataPartition(y = en.nested$sex, p = 0.9, list = FALSE)
+train.data <- en.clean %>%       # обучающая выборка
+  dfm_subset(rownames(en.clean) %in% en.longmeta$sent_id[split])
+test.data <- en.clean %>%        # тестовая выборка
+  dfm_subset(!rownames(en.clean) %in% en.longmeta$sent_id[split]) 
+
+response <- as.factor(en.nested$sex)
+trainY <- response[split]
+testY <- response[-split]
+```
+
+Обучаем модель
+
+```{r}
+cv.elasticnet <- cv.glmnet(x = train.data, y = trainY, family = "binomial", type.measure="auc", nfolds = 5, standardize=FALSE)
+```
+
+Предсказываем, чье видео, по комментариям
+
+```{r}
+predicted.elasticnet <- as.factor(predict(cv.elasticnet, test.data, type="class"))
+cm.elasticnet <- confusionMatrix(data = predicted.elasticnet, reference = testY, positive="men")
+cm.elasticnet
+```
+
+Можно теперь покрутить параметры и посмотреть, в чем были ошибки. И попробовать на корпусе побольше.
