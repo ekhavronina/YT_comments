@@ -1,0 +1,454 @@
+---
+title: "TF-IDF_classification"
+author: "Evgeniya Khavronina"
+output: html_notebook
+---
+
+В этом кодбуке я сделаю классификатор комментариев с помощью метода TF-IDF.
+Статистическая мера TF-ID используется для оценки важности слова в контексте документа, являющегося частью корпуса.
+
+Размеченный дата-сет с сексистскими высказываниями:
+https://github.com/gesiscss/theory-driven-sexism-detection
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Загружаем библиотеки
+
+```{r}
+library(readr)                 # для чтения csv
+library(readxl)                # для чтения xlsx
+library(stringr)               # для работы со сторками
+library(dplyr)                 # для манипуляций с данными
+library(tidytext)              # токинезатор
+library(textstem)              # лемматизатор
+library(stopwords)             # готовые списки стоп-слов
+library(ggplot2)               # визуализация
+
+library(tidyr)                 # функция nest()
+library(purrr)                 # функция map()
+library(quanteda)              # для работы с dfm
+
+library(caret)                 # обучение моделей
+library(glmnet)                # регуляризация моделей
+```
+
+### Готовим данные
+
+Датасет с комментариями собран в скрпите preprocessing.Rmd
+
+```{r}
+# читаем файл с комментариями из женского корпуса
+
+women_en_df <- read_csv("women_en.csv")
+str(women_en_df)
+```
+```{r}
+head(women_en_df)
+```
+
+Чистим текст
+
+```{r}
+# убираем пунктуацию, цифры, табуляцию и переносы строк, лишние пробелы
+women_en_df$clean <- gsub("[[:punct:]]", " ", women_en_df$text)
+women_en_df$clean <- str_replace_all(women_en_df$clean, "[0-9]+", " ")
+women_en_df$clean <- str_replace_all(women_en_df$clean, "[\t\\n\r]+", " ")
+women_en_df$clean <- str_squish(women_en_df$clean)
+
+# строки короче 3 символов: 
+head(women_en_df$clean[nchar(women_en_df$clean)<=2])
+```
+```{r}
+length(women_en_df$clean[nchar(women_en_df$clean)<=2])
+```
+
+```{r}
+# Уберем их
+women_en_df <- women_en_df %>% 
+  filter(nchar(clean) > 2)
+```
+
+Токинезируем и лемматизируем слова
+
+```{r}
+# токинезация
+women_en_lem <- women_en_df %>% 
+  group_by(video_id, id) %>%      # группируем по видео и комментарию
+  unnest_tokens(word, clean)
+
+# лемматизация
+women_en_lem$lemma <- lemmatize_words(women_en_lem$word) 
+
+head(women_en_lem)
+```
+
+Размер корпуса в токенах
+
+```{r}
+nrow(women_en_lem)
+```
+
+Посмотрим частотности со стоп-словами и без них
+
+```{r}
+sw <- stopwords("en")            # стоп-слова
+sw
+```
+
+```{r}
+w_freq_word <- women_en_lem %>% 
+  ungroup() %>% 
+  filter(nchar(lemma) > 2) %>%   # убираем слова короче 3 символов
+  count(lemma, sort=T)           # частотность слов
+head(w_freq_word, 20)
+```
+
+```{r}
+w_freq_word <- w_freq_word %>% 
+  filter(!lemma %in% sw)        # убираем стоп-слова
+head(w_freq_word, 20)
+```
+
+Чистим окружение
+
+```{r}
+rm(w_freq_word)
+rm(sw)
+```
+
+
+### Готовим данные для обучения модели
+
+Читаем размеченные данные
+
+```{r}
+labeled_df <- read_excel(path="C:/Users/79175/Documents/pywd/YT/df_majority.xlsx")
+
+str(labeled_df)
+```
+
+```{r}
+labeled_df %>% 
+  select(text, content_binary, phrasing_binary, sexist_binary) %>%
+  head()
+```
+
+Посмотрим соотношение сексистских и несексистских высказываний в размеченных датасетах 
+
+```{r}
+ggplot(labeled_df, aes(dataset, fill=sexist_binary)) +
+  geom_bar()
+```
+
+Content указывает на содержание высказывания,
+phrasing указывает на формулировку высказывания.
+
+Пример сексистского высказывания по содержанию:
+
+```{r}
+sample(labeled_df$text[labeled_df$content_binary == T 
+                       & labeled_df$phrasing_binary == F], 1)
+```
+
+Пример сексистского (только) по формулировке высказывания:
+
+```{r}
+sample(labeled_df$text[labeled_df$content_binary == F 
+                       & labeled_df$phrasing_binary == T], 1)
+```
+
+```{r}
+labeled_df %>% 
+  group_by(content_binary, phrasing_binary) %>% 
+  count()
+```
+
+Мета-данные с id высказывания (твита) и лейблом
+
+```{r}
+labeled_df <- labeled_df %>% 
+  mutate(sent_id = row_number())  # добавляем номер твита
+
+labeled_meta <- labeled_df %>% 
+  select(sent_id, sexist_binary)
+
+# преобразуем лейбл в фактор
+labeled_meta$sexist_binary <- as.factor(labeled_meta$sexist_binary)
+levels(labeled_meta$sexist_binary) <- c("non-sexist", "sexist")
+levels(labeled_meta$sexist_binary)
+```
+
+Трансформируем данные в длинный формат и чистим.
+Уберем слово "mention" т. к. им заменялись все упоминания в твитах
+
+```{r}
+# убираем лишнее
+labeled_df$clean <- gsub("[[:punct:]]", " ", labeled_df$text)
+labeled_df$clean <- str_replace_all(labeled_df$clean, "[0-9]+", " ")
+labeled_df$clean <- str_replace_all(labeled_df$clean, "[\t\\n\r]+", " ")
+labeled_df$clean <- str_squish(labeled_df$clean)
+
+labeled_long <- labeled_df %>% 
+  group_by(sent_id, sexist_binary) %>%   # группируем по id и лейблу
+  unnest_tokens(word, clean) %>%         # токинезируем
+  filter(! word == "mention")            # уберем слово "mention"
+
+labeled_long$lemma <- lemmatize_words(labeled_long$word) # лемматизируем
+
+labeled_long <- labeled_long %>%
+  select(-word)                          # убираем лишнюю колонку
+  
+
+# собираем твиты обратно из слов в списки
+labeled_nested <- labeled_long %>%      
+  group_by(sent_id, sexist_binary) %>%   # группируем 
+  tidyr::nest(lemma) %>%                 # собираем в списки
+  mutate(text = map(data, unlist),       # из списков делаем обратно тексты
+         text = map_chr(text, paste, collapse = " ")) 
+
+labeled_nested$sexist_binary <- as.factor(labeled_nested$sexist_binary)
+levels(labeled_nested$sexist_binary) <- c("non-sexist", "sexist")
+
+head(labeled_nested)
+```
+
+Создаем матрицу термов-документов
+
+```{r}
+labeled_dtm <- labeled_long %>%
+  ungroup() %>% 
+  count(sent_id, lemma) %>%           # считаем частотности по каждому твиту
+  bind_tf_idf(lemma, sent_id, n) %>%  # объединяем term frequency и inverse document frequency
+  cast_dfm(sent_id, lemma, tf_idf)    # создаем матрицу
+
+labeled_dtm
+```
+
+Можно еще немного почистить матрицу, но это практически не влияет на результат
+
+```{r}
+labeled_clean <- labeled_dtm %>%
+    dfm_wordstem(language = "en") %>%
+    dfm_trim(min_docfreq=0.10)
+labeled_clean
+
+```
+
+Тренировочная и тестовая выборка (10%)
+
+```{r}
+set.seed(9)
+
+# делим датасет (90:10)
+split <- createDataPartition(y=labeled_meta$sexist_binary, p = 0.9, list = FALSE)
+# обучающая выборка
+train.data <- labeled_dtm %>% 
+  dfm_subset(rownames(labeled_dtm) %in% labeled_meta$sent_id[split])
+# тестовая выборка
+test.data <- labeled_dtm %>% 
+  dfm_subset(!rownames(labeled_dtm) %in% labeled_meta$sent_id[split]) 
+
+response <- as.factor(labeled_nested$sexist_binary)
+trainY <- response[split]
+testY <- response[-split]
+```
+
+Обучаем модели
+
+```{r}
+#cv.ridge <- cv.glmnet(
+#  x=train.data, y=trainY, alpha=0, family="binomial", type.measure="auc", nfolds = 5, standardize=FALSE)
+```
+
+```{r}
+cv.lasso <- cv.glmnet(
+  x=train.data, y=trainY, alpha=1, family="binomial", type.measure="auc", nfolds = 5, standardize=FALSE)
+```
+
+```{r}
+cv.elasticnet <- cv.glmnet(
+  x=train.data, y=trainY, family="binomial", type.measure="auc", nfolds = 5, standardize=FALSE)
+```
+
+Предсказываем лейбл на тестовой выборке
+
+```{r}
+predicted.lasso <- as.factor(predict(cv.lasso, test.data, type="class"))
+#predicted.ridge <- as.factor(predict(cv.ridge, test.data, type="class"))
+predicted.elasticnet <- as.factor(predict(cv.elasticnet, test.data, type="class"))
+```
+
+Следующая модель без стоп-слов предсказывает примерно одинаково с labeled_dtm и с labeled_clean.
+Лучше всего предсказывает, если не убирать стоп-слова:
+
+```{r}
+cm.lasso <- confusionMatrix(
+  data = predicted.lasso, reference = testY, positive="sexist", mode = "prec_recall")
+cm.lasso
+```
+
+```{r}
+#cm.ridge <- confusionMatrix(
+#  data = predicted.ridge, reference = testY, positive="sexist", mode = "prec_recall")
+#cm.ridge
+```
+
+Следующая модель без стоп-слов предсказывает немного лучше с labeled_dtm, чем с labeled_clean.
+Лучше всего работает со стоп-словами.
+
+```{r}
+cm.elasticnet <- confusionMatrix(
+  data = predicted.elasticnet, reference = testY, positive="sexist", mode = "prec_recall")
+cm.elasticnet
+```
+
+Анализ переменных
+
+```{r}
+coef(cv.lasso, cv.lasso$lambda.min) %>%
+  as.matrix %>% as.data.frame %>%
+  tibble::rownames_to_column() %>%
+  arrange(-abs(`s1`)) %>%
+  head(100)
+  
+```
+
+```{r}
+#coef(cv.ridge, cv.ridge$lambda.min) %>%
+#  as.matrix %>% as.data.frame %>%
+#  tibble::rownames_to_column() %>%
+#  arrange(-abs(`s1`)) %>%
+#  head(100)
+```
+
+```{r}
+coef(cv.elasticnet, cv.elasticnet$lambda.min) %>%
+  as.matrix %>% as.data.frame %>%
+  tibble::rownames_to_column() %>%
+  arrange(-abs(`s1`)) %>%
+  head(100)
+```
+
+
+### Используем модель на комментариях
+
+Создадим список слов, которые есть в тренировочном датасете
+
+```{r}
+vocab <- unique(labeled_long$lemma)
+length(vocab)  # размер словаря
+```
+
+Отметим комментарии, которые не содержат ни одного слова из словаря тренировочного
+датасета. При классификации они могут быть помечены как сексистские.
+
+
+```{r}
+women_long <- women_en_lem %>% 
+  ungroup() %>% 
+  select(-word, -video_id)
+
+# сначала убираем все слова, не входящие в тренировочный словарь
+women_unidentified <- women_en_lem %>% 
+    filter(lemma %in% vocab)
+
+# сохраняем оставшиеся id
+id_remained <- unique(women_unidentified$id)
+
+# собираем в отдельный датасет комментарии, которые полностью выбыли при фильтрации 
+# (в них нет ни одного слова из словаря)
+women_unidentified <- women_en_df %>% 
+  filter(! id %in% id_remained)
+
+# пометим результат как неизвестный
+women_unidentified <- women_unidentified %>% 
+  mutate(result = "unidentified")
+
+# это могут быть комментарии с опечатками, только из эмоджи, на другом языке и т.д.
+head(women_unidentified)
+```
+
+```{r}
+women_nested <- women_long %>%
+  group_by(id) %>% 
+  tidyr::nest(lemma) %>%
+  mutate(text = map(data, unlist), 
+         text = map_chr(text, paste, collapse = " ")) 
+```
+
+Создаем матрицу термов-документов
+
+```{r}
+women_dtm <- women_long %>%
+  ungroup() %>% 
+  count(id, lemma) %>%
+  bind_tf_idf(lemma, id, n) %>% 
+  cast_dfm(id, lemma, tf_idf)
+
+women_dtm
+```
+
+Сделаем матрицу совместимой с моделью: подгоняем размер матрицы реального датасета и тренировочного. Лишние слова убираются, на места недостающих добавляются нули.
+
+```{r}
+women_dtm <- dfm_match(women_dtm, featnames(labeled_dtm))
+women_dtm
+```
+
+Используем классификатор elasticnet
+
+```{r}
+predicted.elasticnet.women <- as.factor(predict(cv.elasticnet, women_dtm, type="class"))
+```
+
+```{r}
+women_result <- women_nested %>% 
+  select(-data, -text) %>% 
+  bind_cols(result = predicted.elasticnet.women) %>% 
+  left_join(women_en_df[c(1,2,3)], by="id")
+
+head(women_result)
+```
+```{r}
+women_result %>% 
+  filter(result == "sexist")
+
+```
+
+```{r}
+women_result %>% 
+  group_by(result) %>% 
+  count()
+```
+
+
+Используем классификатор lasso
+
+```{r}
+predicted.lasso.women <- as.factor(predict(cv.lasso, women_dtm, type="class"))
+```
+
+```{r}
+women_result_lasso <- women_nested %>% 
+  select(-data, -text) %>% 
+  bind_cols(result = predicted.lasso.women) %>% 
+  left_join(women_en_df[c(1,2,3)], by="id")
+
+
+head(women_result_lasso)
+```
+```{r}
+women_result_lasso %>% 
+  filter(result == "sexist")
+```
+
+```{r}
+women_result_lasso %>% 
+  group_by(result) %>% 
+  count()
+```
+
+Пока что результаты так себе. Однако я уже исправила ошибку, которая, как оказалось, полностью портила модель.
