@@ -49,5 +49,7 @@ comments_trigram <- df %>% unnest_tokens(trigram, clean, token='ngrams', n=3)
 trigram_freq <- comments_trigram %>% count(trigram, sort=T)  # частотность триграмов
 
 
-# смотрим комментарии со словом "красивый"
+# смотрим, например, комментарии со словом "красивый"
 df %>% filter(str_detect(df$clean, 'красивый'))
+
+# скрипт не завершен, добавлю позже
